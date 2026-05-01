@@ -1,0 +1,6 @@
+node_modules/
+.env
+firebase-credentials.json
+google-credentials.json
+*.key
+.DS_Storefirebase-debug.log
