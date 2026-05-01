@@ -118,44 +118,6 @@ async function saveStudentProfile(profile) {
   }
 }
 
-// ── ANALYZE CONVERSATION FOR ADAPTATION ──
-function analyzeConversation(messages) {
-  if (messages.length < 2) return { hasConfusion: false, hasSuccess: false };
-  
-  const lastUser = [...messages].reverse().find(m => m.role === 'user');
-  const prevAI = [...messages].slice(0, -1).reverse().find(m => m.role === 'assistant');
-  
-  if (!lastUser || !prevAI) return { hasConfusion: false, hasSuccess: false };
-
-  const aiText = prevAI.content.toLowerCase();
-  const userText = (lastUser.content || '').toLowerCase();
-
-  // AI задавал тест с вариантами?
-  const hadQuestion = (aiText.includes('a)') || aiText.includes('**a)') || aiText.includes('a)')) &&
-    (aiText.includes('b)') || aiText.includes('**b)')) && aiText.includes('?');
-
-  if (!hadQuestion) {
-    const confusionWords = ["don't understand", "not clear", "confused", "не понимаю", "непонятно", "не знаю", "помогите", "не понял"];
-    return { hasConfusion: confusionWords.some(w => userText.includes(w)), hasSuccess: false };
-  }
-
-  // Пользователь ответил одной буквой или словом — считаем попытку
-  const giveUp = ["i don't know", "no idea", "idk", "не знаю", "пропусти", "понятия не имею"];
-  if (giveUp.some(w => userText.includes(w))) return { hasConfusion: true, hasSuccess: false };
-
-  // Если ответ короткий (буква/слово) — засчитываем как попытку, смотрим ответ AI
-  const lastAI = messages[messages.length - 1];
-  if (lastAI && lastAI.role === 'assistant') {
-    const nextText = lastAI.content.toLowerCase();
-    const isCorrect = ['correct!', 'right!', 'exactly!', 'perfect!', 'правильно!', 'верно!', 'отлично!', '✅'].some(w => nextText.startsWith(w) || nextText.includes(w));
-    const isWrong = ['incorrect', 'wrong', 'not quite', 'неправильно', 'неверно', 'к сожалению', '❌'].some(w => nextText.includes(w));
-    if (isCorrect) return { hasConfusion: false, hasSuccess: true };
-    if (isWrong) return { hasConfusion: true, hasSuccess: false };
-  }
-
-  return { hasConfusion: false, hasSuccess: false };
-}
-
 // ── SYSTEM PROMPT ──
 function buildSystemPrompt(profile, conversationHistory, todayTask, studyPlan)  {
   const total = profile.correctAnswers + profile.wrongAnswers;
@@ -314,7 +276,27 @@ try {
 }
     profile.totalSessions++;
 
-    const { hasConfusion, hasSuccess } = analyzeConversation(conversationHistory);
+    let hasConfusion = false, hasSuccess = false;
+if (conversationHistory.length >= 2) {
+  const lastAI = [...conversationHistory].reverse().find(m => m.role === 'assistant');
+  const lastUser = [...conversationHistory].reverse().find(m => m.role === 'user');
+  
+  if (lastAI && lastUser) {
+    const analysisResponse = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 10,
+      messages: [{
+        role: 'user',
+        content: `Teacher said: "${lastAI.content.slice(0, 300)}"
+Student replied: "${lastUser.content.slice(0, 100)}"
+Did the student answer correctly? Reply with only one word: CORRECT, WRONG, or NEUTRAL`
+      }]
+    });
+    const verdict = analysisResponse.content[0].text.trim().toUpperCase();
+    if (verdict.includes('CORRECT')) hasSuccess = true;
+    else if (verdict.includes('WRONG')) hasConfusion = true;
+  }
+}
 
     if (hasSuccess) {
       profile.correctAnswers++;
@@ -391,6 +373,7 @@ if (todayTask && aiResponse.includes("marking") && aiResponse.includes("complete
     }
 
     await saveStudentProfile(profile);
+
 
 // Синхронизируем в Firestore для Progress панели
 try {
