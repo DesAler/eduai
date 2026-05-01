@@ -808,34 +808,14 @@ app.post('/api/study-plan', async (req, res) => {
     // 👉 ВАЖНО: теперь await внутри async
     const profile = await getStudentProfile(studentId);
 
+    // 1. Строим промпт для Claude (собираем даты и темы)
     const todayStr = new Date().toISOString().split('T')[0];
-
     const examsText = exams.map(e => {
-      return `${e.subject} - ${e.date}`;
+      const daysLeft = Math.ceil((new Date(e.date) - new Date()) / (1000*60*60*24));
+      return `- ${e.subject}: exam on ${e.date} (${daysLeft} days from today ${todayStr}), topics: ${e.topics.join(', ')}`;
     }).join('\n');
 
-    // временно (чтобы проверить что всё работает)
-    const plan = {
-      message: "PLAN WORKS",
-      exams: examsText,
-      profile
-    };
-
-    res.json({ success: true, plan });
-
-  } catch (err) {
-    console.error("ERROR:", err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-    // Строим промпт для Claude
-    const todayStr = new Date().toISOString().split('T')[0];
-const examsText = exams.map(e => {
-  const daysLeft = Math.ceil((new Date(e.date) - new Date()) / (1000*60*60*24));
-  return `- ${e.subject}: exam on ${e.date} (${daysLeft} days from today ${todayStr}), topics: ${e.topics.join(', ')}`;
-}).join('\n');
-
+    // 2. Сам текст промпта
     const planPrompt = `You are an expert study planner. Create a detailed day-by-day study schedule.
 
 Student level: ${profile.level}
@@ -878,6 +858,7 @@ Return ONLY valid JSON in this exact format:
   "overallStrategy": "Focus on Calculus first (closest exam). Switch to Physics after May 5."
 }`;
 
+    // 3. Отправляем запрос к Claude
     const response = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 4000,
@@ -886,6 +867,7 @@ Return ONLY valid JSON in this exact format:
 
     let planData;
     try {
+      // Пытаемся вытащить JSON из ответа нейросети
       const text = response.content[0].text;
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       planData = JSON.parse(jsonMatch[0]);
@@ -893,14 +875,14 @@ Return ONLY valid JSON in this exact format:
       return res.status(500).json({ error: 'Failed to parse AI plan' });
     }
 
-    // Пересчитываем totalTopics правильно
+    // 4. Пересчитываем totalTopics правильно
     planData.plans = planData.plans.map(p => ({
       ...p,
       totalTopics: p.dailySchedule.length,
       completedTopics: p.dailySchedule.filter(d => d.completed).length
     }));
 
-    // Сохраняем в Google Sheets — новый лист "StudyPlans"
+    // 5. Сохраняем в Google Sheets — новый лист "StudyPlans"
     try {
       const sheets = await getSheets();
       const planRow = [[
@@ -919,9 +901,11 @@ Return ONLY valid JSON in this exact format:
       console.log('Sheets save error (non-critical):', e.message);
     }
 
+    // 6. Отдаем успешный результат на фронтенд!
     res.json({ success: true, plan: planData, studentId });
 
   } catch (error) {
+    // Если что-то сломалось глобально, ловим ошибку здесь
     console.error('Study plan error:', error.message);
     res.status(500).json({ error: error.message });
   }
