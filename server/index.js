@@ -314,7 +314,7 @@ try {
 }
     profile.totalSessions++;
 
-    const { hasConfusion, hasSuccess } = analyzeConversation([...conversationHistory, { role: 'user', content: message }]);
+    const { hasConfusion, hasSuccess } = analyzeConversation(conversationHistory);
 
     if (hasSuccess) {
       profile.correctAnswers++;
@@ -391,6 +391,18 @@ if (todayTask && aiResponse.includes("marking") && aiResponse.includes("complete
     }
 
     await saveStudentProfile(profile);
+
+// Синхронизируем в Firestore для Progress панели
+try {
+  const db = admin.firestore();
+  await db.collection('users').doc(studentId).update({
+    level: profile.level,
+    correctAnswers: profile.correctAnswers,
+    wrongAnswers: profile.wrongAnswers,
+    weakTopics: profile.weakTopics,
+    totalSessions: profile.totalSessions,
+  });
+} catch(e) { console.log('Firestore sync error:', e.message); }
 
     const total = profile.correctAnswers + profile.wrongAnswers;
     const accuracy = total > 0 ? Math.round((profile.correctAnswers / total) * 100) : 0;
