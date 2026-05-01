@@ -665,7 +665,7 @@ const db = getFirestore(fbApp);
 
 let currentUser = null, currentChatId = null, currentMessages = [], allChats = [], unsubChats = null;
 let renamingChatId = null, pendingFile = null, pendingFileBase64 = null;
-
+const BASE_URL = "https://eduai-production-e861.up.railway.app";
 // ── AUTH TABS ──
 window.switchTab = (tab) => {
   document.getElementById('tab-login').classList.toggle('active', tab==='login');
@@ -1070,7 +1070,7 @@ if(pendingFile && pendingFileBase64) {
 }
     else if(fileBase64){body.fileName=fileName;}
 
-    const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const res = await fetch('/api/chat', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const data=await res.json();
     const aiText=data.response||'Server error';
     await addDoc(msgsRef,{role:'assistant',content:aiText,createdAt:serverTimestamp()});
@@ -1200,12 +1200,19 @@ window.generatePlan = async () => {
   document.getElementById('btn-generate').style.display = 'none';
 
   try {
-    const res = await fetch('/api/study-plan', {
+    const res = await fetch(`${BASE_URL}/api/study-plan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ studentId: currentUser.uid, exams })
     });
-    const data = await res.json();
+    const text = await res.text();
+
+try {
+  const data = JSON.parse(text);
+  console.log("SUCCESS:", data);
+} catch (e) {
+  console.error("НЕ JSON:", text);
+}
     if (!data.success) throw new Error(data.error);
     currentPlanData = data.plan;
 
@@ -1390,7 +1397,7 @@ window.markComplete = async (subject, day, el) => {
   el.closest('.day-card').classList.add('completed');
 
   try {
-    await fetch('/api/study-plan/complete', {
+    await fetch(`${BASE_URL}/api/study-plan/complete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ studentId: currentUser.uid, subject, day })
