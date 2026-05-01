@@ -799,15 +799,27 @@ bot.onText(/\/next/, async (msg) => {
 
 console.log('🤖 Telegram bot started');
 
-// ══════════════════════════════════════════════
-// ── STUDY PLAN ENGINE ──
-// ══════════════════════════════════════════════
 app.post('/api/study-plan', async (req, res) => {
   try {
     console.log("BODY:", req.body);
 
-    // твоя логика
-    const plan = "test"; // временно
+    const { studentId, exams } = req.body;
+
+    // 👉 ВАЖНО: теперь await внутри async
+    const profile = await getStudentProfile(studentId);
+
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    const examsText = exams.map(e => {
+      return `${e.subject} - ${e.date}`;
+    }).join('\n');
+
+    // временно (чтобы проверить что всё работает)
+    const plan = {
+      message: "PLAN WORKS",
+      exams: examsText,
+      profile
+    };
 
     res.json({ success: true, plan });
 
@@ -816,8 +828,6 @@ app.post('/api/study-plan', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
-    const profile = await getStudentProfile(studentId);
 
     // Строим промпт для Claude
     const todayStr = new Date().toISOString().split('T')[0];
