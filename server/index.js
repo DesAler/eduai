@@ -804,12 +804,18 @@ console.log('🤖 Telegram bot started');
 // ══════════════════════════════════════════════
 app.post('/api/study-plan', async (req, res) => {
   try {
-    const { studentId, exams, totalDays } = req.body;
-    // exams = [{ subject: "Calculus", date: "2026-05-10", topics: ["limits","derivatives","integrals"] }]
+    console.log("BODY:", req.body);
 
-    if (!studentId || !exams || !exams.length) {
-      return res.status(400).json({ error: 'studentId and exams required' });
-    }
+    // твоя логика
+    const plan = "test"; // временно
+
+    res.json({ success: true, plan });
+
+  } catch (err) {
+    console.error("ERROR:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
     const profile = await getStudentProfile(studentId);
 
