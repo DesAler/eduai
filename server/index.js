@@ -6,8 +6,7 @@ const { google } = require('googleapis');
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '20mb' }));
-app.use(express.urlencoded({ limit: '20mb', extended: true }));
+app.use(express.json());
 app.use(express.static('public'));
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -15,7 +14,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const admin = require('firebase-admin');
 if (!admin.apps.length) {
   admin.initializeApp({
-    credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_CREDENTIALS)),
+    credential: admin.credential.cert(require('../firebase-credentials.json')),
     projectId: 'eduai-assistant-9fb47'
   });
 }
@@ -25,7 +24,7 @@ const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const SHEET_NAME = 'Лист1';
 
 const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
+  keyFile: 'google-credentials.json',
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
@@ -121,170 +120,123 @@ async function saveStudentProfile(profile) {
 
 // ── ANALYZE CONVERSATION FOR ADAPTATION ──
 function analyzeConversation(messages) {
-  // Ищем паттерн: AI задал вопрос с вариантами → пользователь ответил
-  const recent = messages.slice(-4); // последние 4 сообщения
+  if (messages.length < 2) return { hasConfusion: false, hasSuccess: false };
   
-  const lastAI = [...recent].reverse().find(m => m.role === 'assistant');
-  const lastUser = [...recent].reverse().find(m => m.role === 'user');
+  const lastUser = [...messages].reverse().find(m => m.role === 'user');
+  const prevAI = [...messages].slice(0, -1).reverse().find(m => m.role === 'assistant');
   
-  if (!lastAI || !lastUser) return { hasConfusion: false, hasSuccess: false };
+  if (!lastUser || !prevAI) return { hasConfusion: false, hasSuccess: false };
 
-  const aiText = lastAI.content.toLowerCase();
+  const aiText = prevAI.content.toLowerCase();
   const userText = (lastUser.content || '').toLowerCase();
 
-  // AI задавал тестовый вопрос? (ищем маркеры вопроса с вариантами)
-  const aiAskedQuestion = 
-    (aiText.includes('a)') || aiText.includes('а)') || aiText.includes('option a') || aiText.includes('вариант')) &&
-    (aiText.includes('b)') || aiText.includes('б)') || aiText.includes('option b')) &&
-    (aiText.includes('?'));
+  // AI задавал тест с вариантами?
+  const hadQuestion = (aiText.includes('a)') || aiText.includes('**a)') || aiText.includes('a)')) &&
+    (aiText.includes('b)') || aiText.includes('**b)')) && aiText.includes('?');
 
-  if (!aiAskedQuestion) {
-    // AI не задавал тест — просто смотрим на явные признаки
-    const confusionWords = ["don't understand", "not clear", "confused", "lost", "не понимаю", "непонятно", "не знаю", "помогите"];
-    const hasConfusion = confusionWords.some(w => userText.includes(w));
-    return { hasConfusion, hasSuccess: false };
+  if (!hadQuestion) {
+    const confusionWords = ["don't understand", "not clear", "confused", "не понимаю", "непонятно", "не знаю", "помогите", "не понял"];
+    return { hasConfusion: confusionWords.some(w => userText.includes(w)), hasSuccess: false };
   }
 
-  // AI задавал тест — оцениваем ответ пользователя
-  // Ищем правильный ответ в тексте AI: паттерн "✓ A)" или "correct: b" или "правильный ответ — б"
-  const correctMatch = 
-    lastAI.content.match(/correct[:\s]+([a-dа-г])\)?/i) ||
-    lastAI.content.match(/answer[:\s]+([a-dа-г])\)?/i) ||
-    lastAI.content.match(/правильн\w+[:\s—-]+([а-гa-d])\)?/i) ||
-    lastAI.content.match(/✓\s*([a-dа-г])\)?/i);
-
-  // Если AI ещё не раскрыл ответ — оцениваем по следующему ответу AI
-  // Смотрим есть ли в следующем ответе AI "correct!" / "правильно!"
-  const nextAI = messages[messages.length - 1];
-  if (nextAI && nextAI.role === 'assistant') {
-    const nextText = nextAI.content.toLowerCase();
-    const confirmsCorrect = ['correct!', 'right!', 'exactly!', 'perfect!', 'правильно!', 'верно!', 'отлично!', '✅'].some(w => nextText.includes(w));
-    const confirmsWrong = ['incorrect', 'wrong', 'not quite', 'неправильно', 'неверно', 'к сожалению', 'нет,'].some(w => nextText.includes(w));
-    if (confirmsCorrect) return { hasConfusion: false, hasSuccess: true };
-    if (confirmsWrong) return { hasConfusion: true, hasSuccess: false };
-  }
-
-  // Явный отказ / непонимание
-  const giveUp = ["i don't know", "no idea", "idk", "skip", "не знаю", "пропусти", "понятия не имею", "я тупой", "не понял"];
+  // Пользователь ответил одной буквой или словом — считаем попытку
+  const giveUp = ["i don't know", "no idea", "idk", "не знаю", "пропусти", "понятия не имею"];
   if (giveUp.some(w => userText.includes(w))) return { hasConfusion: true, hasSuccess: false };
+
+  // Если ответ короткий (буква/слово) — засчитываем как попытку, смотрим ответ AI
+  const lastAI = messages[messages.length - 1];
+  if (lastAI && lastAI.role === 'assistant') {
+    const nextText = lastAI.content.toLowerCase();
+    const isCorrect = ['correct!', 'right!', 'exactly!', 'perfect!', 'правильно!', 'верно!', 'отлично!', '✅'].some(w => nextText.startsWith(w) || nextText.includes(w));
+    const isWrong = ['incorrect', 'wrong', 'not quite', 'неправильно', 'неверно', 'к сожалению', '❌'].some(w => nextText.includes(w));
+    if (isCorrect) return { hasConfusion: false, hasSuccess: true };
+    if (isWrong) return { hasConfusion: true, hasSuccess: false };
+  }
 
   return { hasConfusion: false, hasSuccess: false };
 }
-function buildSystemPrompt(profile, conversationHistory, todayTask, studyPlan) {
+
+// ── SYSTEM PROMPT ──
+function buildSystemPrompt(profile, conversationHistory, todayTask, studyPlan)  {
   const total = profile.correctAnswers + profile.wrongAnswers;
   const accuracy = total > 0 ? Math.round((profile.correctAnswers / total) * 100) : 0;
   const weakTopicsList = profile.weakTopics.slice(-5).join(', ') || 'none identified';
 
+  const levelInstructions = {
+    beginner: `
+- Explain as simply as possible, use everyday analogies
+- Break complex concepts into small parts
+- Give lots of examples
+- If the student doesn't understand — explain from a different angle
+- After each explanation, ask one simple check question
+- Use emojis for clarity`,
+
+    intermediate: `
+- Explain clearly and in a structured way
+- Give medium-difficulty examples
+- Connect new material to what the student already knows
+- Ask questions that require thinking
+- Give hints occasionally when the student struggles`,
+
+    advanced: `
+- Talk as an equal, use professional terminology
+- Give complex tasks and case studies
+- Minimal hints — let them think independently
+- Ask questions requiring deep analysis and critical thinking
+- Point out nuances and exceptions to rules`,
+  };
+
   const recentTopics = conversationHistory
     .filter(m => m.role === 'user')
     .slice(-3)
-    .map(m => m.content.slice(0, 60))
+    .map(m => m.content.slice(0, 50))
     .join(' | ');
 
-  const levelInstructions = {
-    beginner: `
-- Use simple everyday analogies before introducing formal terms
-- Break every concept into the smallest possible steps
-- Never assume prior knowledge — always build from scratch
-- After each new idea, give a concrete example immediately
-- Praise effort, not just correct answers`,
-    intermediate: `
-- Introduce proper terminology alongside intuitive explanations
-- Connect new concepts to things the student already knows
-- Challenge with "what would happen if..." style questions
-- Provide hints when stuck, but let them work through it first
-- Point out common mistakes for this topic proactively`,
-    advanced: `
-- Use precise academic language and notation
-- Discuss edge cases, exceptions, and deeper implications
-- Assign open-ended problems that require synthesis
-- Push back gently if an answer is incomplete or imprecise
-- Reference connections to adjacent fields when relevant`,
-  };
+  return `You are a personal AI tutor for EduAI. You adapt to each student individually.
 
-  const quizInstruction = total < 3
-    ? `ASSESSMENT: Student is new — focus on building confidence. Ask simple comprehension checks, not trick questions.`
-    : accuracy >= 80
-    ? `ASSESSMENT: Student is performing well (${accuracy}% accuracy). Push difficulty up — ask application and analysis questions.`
-    : accuracy >= 60
-    ? `ASSESSMENT: Student is developing (${accuracy}% accuracy). Mix recall and application questions. Give partial credit in feedback.`
-    : `ASSESSMENT: Student is struggling (${accuracy}% accuracy). Prioritise understanding over speed. Diagnose misconceptions before moving on.`;
+═══════════════════════════════
+STUDENT PROFILE:
+- ID: ${profile.userId}
+- Level: ${profile.level.toUpperCase()}
+- Answer accuracy: ${accuracy}%
+- Correct: ${profile.correctAnswers} | Wrong: ${profile.wrongAnswers}
+- Weak topics: ${weakTopicsList}
+- Sessions completed: ${profile.totalSessions}
+═══════════════════════════════
 
-  return `You are an expert AI tutor inside EduAI — an adaptive learning platform. Your job is to teach, assess, and personalise every interaction based on the student's actual performance data.
-
-━━━ STUDENT PROFILE ━━━
-Level: ${profile.level.toUpperCase()} | Accuracy: ${accuracy}% (${profile.correctAnswers} correct, ${profile.wrongAnswers} wrong) | Sessions: ${profile.totalSessions}
-Weak areas: ${weakTopicsList}
-Recent messages: ${recentTopics || 'session just started'}
-
-━━━ TEACHING APPROACH (${profile.level}) ━━━
+YOUR STRATEGY (level: ${profile.level}):
 ${levelInstructions[profile.level]}
 
-━━━ COMMUNICATION STYLE ━━━
-- Be natural and direct — like a knowledgeable friend, not a textbook
-- Never robotically confirm what the student just said ("You chose A, which means...")
-- Never offer numbered menu options for trivial decisions ("1️⃣ Yes 2️⃣ No")
-- If the student names a topic, start teaching it immediately — no permission needed
-- Keep responses focused; only go long when the concept genuinely demands it
-- Match the student's language (English, Russian, or Kazakh) automatically
-- One idea at a time — never stack multiple questions in one message
+ADAPTATION RULES:
+1. If the student says they don't understand → simplify, use a different approach
+2. If the student answers correctly → gradually increase difficulty
+3. If the same mistake repeats → explain from scratch in a different way
+4. Identify the topic and remember the student's weak spots
+5. NEVER ask multiple questions at once — only one at a time
 
-━━━ ASSESSMENT STRATEGY ━━━
-${quizInstruction}
+RESPONSE FORMAT:
+- Be specific and to the point
+- Structure long answers clearly
+- Use examples
+- End each explanation with ONE check question
+- Reply in the language the student uses (English, Russian, or Kazakh)
+- Be friendly and encouraging
 
-Quiz format rules:
-- Ask a multiple-choice question (A / B / C / D) only after you've explained a real concept (not after greetings, topic choices, or small talk)
-- Make the question test understanding, not memorisation
-- When the student answers: open with ✅ Correct! or ❌ Not quite — then in 1–2 sentences explain why, then continue the lesson
-- If the student says "I don't know" / "не знаю" / "я тупой" or similar — don't quiz further; diagnose the confusion and re-explain from a different angle
-- Never repeat the same question twice
+RECENT TOPICS: ${recentTopics || 'start of conversation'}
 
-━━━ RESPONSE FORMAT ━━━
-Structure every teaching response like this:
-
-1. HOOK (1 sentence) — a relatable analogy or real-world connection to grab attention
-2. CORE EXPLANATION — the actual concept, broken into short paragraphs with line breaks
-   • Use bullet points for lists of properties or steps
-   • Use emojis as visual anchors (📌 for key ideas, 💡 for insights, ⚠️ for common mistakes, 🔢 for math)
-   • Bold key terms using **term**
-3. EXAMPLE — a concrete mini-example right after the explanation, not separated from it
-4. QUIZ QUESTION (if appropriate) — formatted exactly like this:
-
----
-**Quick check:**
-[Question text]
-
-**A)** option
-**B)** option  
-**C)** option
-**D)** option
----
-
-When giving feedback on a quiz answer, format it like this:
-✅ **Correct!** [1 sentence why] → [continue lesson or go deeper]
-❌ **Not quite.** The right answer is [X] — [1-2 sentences explaining the misconception clearly]
-
-General formatting rules:
-- Never write walls of text — max 3-4 sentences per paragraph before a line break
-- Never use numbered lists for conversational choices ("1. Do this 2. Do that")
-- The response should feel like a well-designed study card, not a chat message
-- If the student asks to start a topic — open with the hook immediately, no preamble
-,'
-
-━━━ ADAPTATION RULES ━━━
-- Correct answer → acknowledge briefly, then increase depth slightly
-- Wrong answer → identify the specific misconception, correct it gently, give a new simpler example
-- Repeated confusion on the same point → completely change your explanation strategy (different analogy, visual description, or real-world context)
-- Frustration detected → reduce pressure, validate the difficulty, rebuild confidence before continuing
 ${todayTask ? `
-━━━ TODAY'S SCHEDULED TASK ━━━
-Subject: ${todayTask.subject} | Topic: ${todayTask.topic}
-Subtopics: ${todayTask.subtopics?.join(', ') || 'as needed'} | Duration: ${todayTask.durationMinutes} min
+═══════════════════════════════
+📅 TODAY'S STUDY PLAN TASK:
+- Subject: ${todayTask.subject}
+- Topic: ${todayTask.topic}
+- Subtopics: ${todayTask.subtopics?.join(', ') || ''}
+- Duration: ${todayTask.durationMinutes} minutes
+- Type: ${todayTask.taskType}
 
-IMPORTANT: The study plan is a SUGGESTION, not a prison. If the student asks about ANY topic — teach it immediately without mentioning the plan. Only bring up the plan if the student explicitly asks "what should I study today?" or "what's my plan?". Never redirect the student back to the plan mid-conversation.
-When you are confident the student understood the core material, say exactly: "✅ Great work! I'm marking '${todayTask.topic}' as complete."
-━━━ FULL PLAN CONTEXT ━━━
-${studyPlan.plans.map(p => `${p.subject}: ${p.completedTopics}/${p.totalTopics} topics done`).join(' | ')}` : ''}`;
+IMPORTANT: If the student says anything like "let's start", "ready", "begin", "go", "continue" or asks about their plan — automatically start teaching TODAY'S TASK above. Don't wait for them to specify the topic. When you feel the student has understood the topic well, tell them: "✅ Great job! I'm marking '${todayTask.topic}' as complete. Type /next to move to the next topic."
+═══════════════════════════════` : ''}
+
+${studyPlan ? `FULL PLAN OVERVIEW: ${studyPlan.plans.map(p => `${p.subject}: ${p.completedTopics}/${p.totalTopics} done`).join(', ')}` : ''}`;
 }
 
 // ── DETECT TOPIC ──
@@ -323,12 +275,9 @@ app.post('/api/chat', async (req, res) => {
   try {
     const { message, studentId, conversationHistory = [], imageBase64, imageType } = req.body;
 
-    if (!studentId) {
-  return res.status(400).json({ error: 'studentId is required' });
-}
-if (!message && !imageBase64) {
-  return res.status(400).json({ error: 'message or image is required' });
-}
+    if (!message || !studentId) {
+      return res.status(400).json({ error: 'message and studentId are required' });
+    }
 
     const profile = await getStudentProfile(studentId);
     // Читаем план студента
@@ -387,35 +336,16 @@ try {
 
     // Support image uploads
     if (imageBase64 && imageType) {
-  if (imageType === 'application/pdf') {
-    // PDF — отправляем как документ
-    claudeMessages.push({
-      role: 'user',
-      content: [
-        {
-          type: 'document',
-          source: {
-            type: 'base64',
-            media_type: 'application/pdf',
-            data: imageBase64
-          }
-        },
-        { type: 'text', text: message || 'Please read this PDF and help me understand it. Answer any questions about its content.' }
-      ]
-    });
-  } else {
-    // Картинка
-    claudeMessages.push({
-      role: 'user',
-      content: [
-        { type: 'image', source: { type: 'base64', media_type: imageType, data: imageBase64 } },
-        { type: 'text', text: message || 'Please help me with this image.' }
-      ]
-    });
-  }
-} else {
-  claudeMessages.push({ role: 'user', content: message || '' });
-}
+      claudeMessages.push({
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: imageType, data: imageBase64 } },
+          { type: 'text', text: message || 'Please help me with this image.' }
+        ]
+      });
+    } else {
+      claudeMessages.push({ role: 'user', content: message });
+    }
 
     const response = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
@@ -548,16 +478,14 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   const name = msg.from.first_name || 'student';
-  bot.sendMessage(msg.chat.id,
-    `📚 *EduAI Bot — Help*\n\n` +
-    `/start — get started\n` +
-    `/myid — get your Chat ID for the website\n` +
-    `/stats — view your study statistics\n` +
-    `/next — show next study task\n` +
-    `/plan — AI creates a daily study plan\n` +
-    `/pomodoro — 25-minute focus timer\n` +
-    `/help — this message\n\n` +
-    `💻 Study at: https://eduai-assistant-9fb47.web.app`, 
+  bot.sendMessage(chatId,
+    `👋 Hey ${name}!\n\nI'm the EduAI bot. I'll help you prepare for your exams.\n\n` +
+    `📋 *Commands:*\n` +
+    `/myid — get your Chat ID\n` +
+    `/stats — your progress\n` +
+    `/plan — get an AI study plan\n` +
+    `/pomodoro — start a 25-min timer\n` +
+    `/help — help`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -611,9 +539,7 @@ bot.onText(/\/stats/, async (msg) => {
         const exam = new Date(parseInt(examParts[0]), parseInt(examParts[1])-1, parseInt(examParts[2]));
         const daysLeft = Math.ceil((exam - today) / (1000*60*60*24));
         planText += `📚 *${p.subject}* — ${daysLeft} days left\n`;
-        const rTotal = p.dailySchedule ? p.dailySchedule.length : p.totalTopics;
-const rCompleted = p.dailySchedule ? p.dailySchedule.filter(d => d.completed).length : p.completedTopics;
-planText += `Progress: ${rCompleted}/${rTotal} topics (${pct}%)\n`;
+        planText += `Progress: ${p.completedTopics}/${p.totalTopics} topics (${pct}%)\n`;
       });
     }
 
@@ -633,95 +559,27 @@ planText += `Progress: ${rCompleted}/${rTotal} topics (${pct}%)\n`;
 });
 
 // /plan
-// /plan
 bot.onText(/\/plan/, async (msg) => {
   const chatId = msg.chat.id;
-  bot.sendMessage(chatId, '🤔 Loading your study plan...');
+  bot.sendMessage(chatId, '🤔 Creating your personalized study plan...');
 
   try {
-    // Находим userId по chatId
-    const db = admin.firestore();
-    const usersSnap = await db.collection('users').get();
-    let userId = null;
-    usersSnap.forEach(doc => {
-      if (String(doc.data().telegramChatId) === String(chatId)) userId = doc.id;
-    });
-
-    if (!userId) {
-      bot.sendMessage(chatId, '❌ Account not linked.\n\nGo to EduAI → Settings → Notifications and connect your Telegram ID.');
-      return;
-    }
-
-    // Берём план из Firestore
-    const planSnap = await db.collection('users').doc(userId).collection('studyPlans').doc('current').get();
-    if (!planSnap.exists) {
-      bot.sendMessage(chatId, '📅 No study plan found. Create one at EduAI website first!');
-      return;
-    }
-
-    const plan = planSnap.data().plan;
-    const today = new Date().toISOString().split('T')[0];
-
-    // Собираем все невыполненные темы
-    let allTasks = [];
-    plan.plans.forEach(p => {
-      const examDate = new Date(p.examDate);
-      const daysLeft = Math.ceil((examDate - new Date()) / (1000*60*60*24));
-      const pending = p.dailySchedule.filter(d => !d.completed);
-      if (pending.length > 0) {
-        allTasks.push({
-          subject: p.subject,
-          daysLeft,
-          completedTopics: p.completedTopics,
-          totalTopics: p.totalTopics,
-          topics: pending.slice(0, 3).map(t => ({
-            topic: t.topic,
-            subtopics: t.subtopics,
-            durationMinutes: t.durationMinutes
-          }))
-        });
-      }
-    });
-
-    allTasks.sort((a, b) => a.daysLeft - b.daysLeft);
-
-    if (!allTasks.length) {
-      bot.sendMessage(chatId, '🎉 All topics completed! You are ready for your exams!');
-      return;
-    }
-
-    // Отправляем в Claude чтобы сделал красивый план
-    const tasksText = allTasks.map(t =>
-      `${t.subject} (${t.daysLeft} days until exam, ${t.completedTopics}/${t.totalTopics} done):\n` +
-      t.topics.map(tp => `  - ${tp.topic} (${tp.durationMinutes} min): ${tp.subtopics?.join(', ')}`).join('\n')
-    ).join('\n\n');
-
     const response = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 800,
+      max_tokens: 600,
       messages: [{
         role: 'user',
-        content: `Create a beautiful, motivating full day study plan based on these REAL pending topics:
-
-${tasksText}
-
-Rules:
-- Use the ACTUAL topics listed above, not generic ones
-- Show time blocks (e.g. 9:00-10:30 AM)
-- Add short breaks
-- Use emojis 📚🧠⏰☕💪
-- End with a motivating message
-- Max 350 words
-- Format nicely for Telegram`
+        content: `Create a short study plan for today for a student preparing for exams.
+        Format: 3-4 blocks of 25 minutes (pomodoro).
+        Keep it short, motivating, in English.
+        Use emojis. Maximum 200 words.`
       }]
     });
 
-    const planMessage = response.content[0].text;
-    bot.sendMessage(chatId, `🌅 *Good morning! Full day study plan:*\n\n${planMessage}`, { parse_mode: 'Markdown' });
-
+    const plan = response.content[0].text;
+    bot.sendMessage(chatId, `📅 *Your plan for today:*\n\n${plan}`, { parse_mode: 'Markdown' });
   } catch (e) {
-    console.error('/plan error:', e.message);
-    bot.sendMessage(chatId, '❌ Error loading plan: ' + e.message);
+    bot.sendMessage(chatId, '❌ Failed to create a plan. Please try again later.');
   }
 });
 
@@ -747,75 +605,43 @@ bot.onText(/\/pomodoro/, (msg) => {
 });
 
 // /help
-// /next
-bot.onText(/\/next/, async (msg) => {
-  const chatId = msg.chat.id;
-  try {
-    const db = admin.firestore();
-    const usersSnap = await db.collection('users').get();
-    let userId = null;
-    usersSnap.forEach(doc => {
-      if (String(doc.data().telegramChatId) === String(chatId)) userId = doc.id;
-    });
-
-    if (!userId) {
-      bot.sendMessage(chatId, '❌ Account not linked. Go to EduAI → Settings → Notifications.');
-      return;
-    }
-
-    const planSnap = await db.collection('users').doc(userId).collection('studyPlans').doc('current').get();
-    if (!planSnap.exists) {
-      bot.sendMessage(chatId, '📅 No study plan found. Create one at EduAI website!');
-      return;
-    }
-
-    const plans = planSnap.data().plan.plans || [];
-    let nextTask = null, nextSubject = null;
-    plans.forEach(p => {
-      if (!nextTask) {
-        const t = p.dailySchedule.find(d => !d.completed);
-        if (t) { nextTask = t; nextSubject = p.subject; }
-      }
-    });
-
-    if (!nextTask) {
-      bot.sendMessage(chatId, '🎉 All topics completed! You are ready for your exams!');
-      return;
-    }
-
-    bot.sendMessage(chatId,
-      `⏭ *Next Task*\n\n` +
-      `📚 *${nextSubject}*\n` +
-      `📖 ${nextTask.topic}\n` +
-      `🔹 ${nextTask.subtopics?.join(', ') || ''}\n` +
-      `⏱ ${nextTask.durationMinutes} min · ${nextTask.taskType}\n\n` +
-      `_Go to EduAI to start studying!_`,
-      { parse_mode: 'Markdown' }
-    );
-  } catch(e) {
-    bot.sendMessage(chatId, '❌ Error: ' + e.message);
-  }
+bot.onText(/\/help/, (msg) => {
+  bot.sendMessage(msg.chat.id,
+    `📚 *EduAI Bot — Help*\n\n` +
+    `/start — get started\n` +
+    `/myid — get your Chat ID for the website\n` +
+    `/stats — view your study statistics\n` +
+    `/plan — AI creates a daily study plan\n` +
+    `/pomodoro — 25-minute focus timer\n` +
+    `/help — this message\n\n` +
+    `💻 Study at: http://localhost:3000`,
+    { parse_mode: 'Markdown' }
+  );
 });
 
 console.log('🤖 Telegram bot started');
 
+// ══════════════════════════════════════════════
+// ── STUDY PLAN ENGINE ──
+// ══════════════════════════════════════════════
 app.post('/api/study-plan', async (req, res) => {
   try {
-    console.log("BODY:", req.body);
+    const { studentId, exams, totalDays } = req.body;
+    // exams = [{ subject: "Calculus", date: "2026-05-10", topics: ["limits","derivatives","integrals"] }]
 
-    const { studentId, exams } = req.body;
+    if (!studentId || !exams || !exams.length) {
+      return res.status(400).json({ error: 'studentId and exams required' });
+    }
 
-    // 👉 ВАЖНО: теперь await внутри async
     const profile = await getStudentProfile(studentId);
 
-    // 1. Строим промпт для Claude (собираем даты и темы)
+    // Строим промпт для Claude
     const todayStr = new Date().toISOString().split('T')[0];
-    const examsText = exams.map(e => {
-      const daysLeft = Math.ceil((new Date(e.date) - new Date()) / (1000*60*60*24));
-      return `- ${e.subject}: exam on ${e.date} (${daysLeft} days from today ${todayStr}), topics: ${e.topics.join(', ')}`;
-    }).join('\n');
+const examsText = exams.map(e => {
+  const daysLeft = Math.ceil((new Date(e.date) - new Date()) / (1000*60*60*24));
+  return `- ${e.subject}: exam on ${e.date} (${daysLeft} days from today ${todayStr}), topics: ${e.topics.join(', ')}`;
+}).join('\n');
 
-    // 2. Сам текст промпта
     const planPrompt = `You are an expert study planner. Create a detailed day-by-day study schedule.
 
 Student level: ${profile.level}
@@ -858,7 +684,6 @@ Return ONLY valid JSON in this exact format:
   "overallStrategy": "Focus on Calculus first (closest exam). Switch to Physics after May 5."
 }`;
 
-    // 3. Отправляем запрос к Claude
     const response = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 4000,
@@ -867,7 +692,6 @@ Return ONLY valid JSON in this exact format:
 
     let planData;
     try {
-      // Пытаемся вытащить JSON из ответа нейросети
       const text = response.content[0].text;
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       planData = JSON.parse(jsonMatch[0]);
@@ -875,14 +699,7 @@ Return ONLY valid JSON in this exact format:
       return res.status(500).json({ error: 'Failed to parse AI plan' });
     }
 
-    // 4. Пересчитываем totalTopics правильно
-    planData.plans = planData.plans.map(p => ({
-      ...p,
-      totalTopics: p.dailySchedule.length,
-      completedTopics: p.dailySchedule.filter(d => d.completed).length
-    }));
-
-    // 5. Сохраняем в Google Sheets — новый лист "StudyPlans"
+    // Сохраняем в Google Sheets — новый лист "StudyPlans"
     try {
       const sheets = await getSheets();
       const planRow = [[
@@ -901,11 +718,9 @@ Return ONLY valid JSON in this exact format:
       console.log('Sheets save error (non-critical):', e.message);
     }
 
-    // 6. Отдаем успешный результат на фронтенд!
     res.json({ success: true, plan: planData, studentId });
 
   } catch (error) {
-    // Если что-то сломалось глобально, ловим ошибку здесь
     console.error('Study plan error:', error.message);
     res.status(500).json({ error: error.message });
   }
@@ -974,5 +789,5 @@ app.post('/api/study-plan/complete', async (req, res) => {
 // ── START SERVER ──
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`✅ EduAI Backend started on port ${PORT}`);
+  console.log(`✅ EduAI Backend started at http://localhost:${PORT}`);
 });

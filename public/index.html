@@ -1087,11 +1087,26 @@ ael.innerHTML=`<div class="msg-avatar"><svg width="15" height="15" viewBox="0 0 
 wrap.appendChild(ael);
 addCopyButtons(ael);
 renderMath(ael);
-  }catch(e){
+  } catch(e) {
     tel.remove();
-    const eel=document.createElement('div');eel.className='message ai';
-    eel.innerHTML=`<div class="msg-avatar"></div><div class="msg-content"><div class="msg-bubble">Connection error. Please try again.</div></div>`;
-    wrap.appendChild(eel);
+    // Автоматически повторяем запрос один раз (Railway мог засыпать)
+    try {
+      const body2={message:text,studentId:currentUser.uid,conversationHistory:currentMessages.slice(-16).map(m=>({role:m.role,content:m.content}))};
+      if(fileBase64 && fileType){body2.imageBase64=fileBase64;body2.imageType=fileType;}
+      const res2 = await fetch(`${BASE_URL}/api/chat`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body2)});
+      const data2 = await res2.json();
+      const aiText2 = data2.response || 'Server error';
+      await addDoc(msgsRef,{role:'assistant',content:aiText2,createdAt:serverTimestamp()});
+      await updateDoc(doc(db,'users',currentUser.uid,'chats',currentChatId),{updatedAt:serverTimestamp()});
+      currentMessages.push({role:'assistant',content:aiText2});
+      const ael2=document.createElement('div');ael2.className='message ai';
+      ael2.innerHTML=`<div class="msg-avatar"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7d8590" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg></div><div class="msg-content"><div class="msg-bubble">${renderMarkdown(aiText2)}</div><div class="msg-time">${fmt(new Date())}</div></div>`;
+      wrap.appendChild(ael2);addCopyButtons(ael2);renderMath(ael2);
+    } catch(e2) {
+      const eel=document.createElement('div');eel.className='message ai';
+      eel.innerHTML=`<div class="msg-avatar"></div><div class="msg-content"><div class="msg-bubble">⚠️ Server is warming up, please send your message again in a moment.</div></div>`;
+      wrap.appendChild(eel);
+    }
   }
   area.scrollTop=area.scrollHeight;
   
