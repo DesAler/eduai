@@ -1070,7 +1070,12 @@ if(pendingFile && pendingFileBase64) {
 }
     else if(fileBase64){body.fileName=fileName;}
 
-    const res = await fetch('/api/chat', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    // ПРАВИЛЬНО ✅
+const res = await fetch(`${BASE_URL}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+});
     const data=await res.json();
     const aiText=data.response||'Server error';
     await addDoc(msgsRef,{role:'assistant',content:aiText,createdAt:serverTimestamp()});
@@ -1201,23 +1206,23 @@ window.generatePlan = async () => {
 
   try {
     const res = await fetch(`${BASE_URL}/api/study-plan`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ studentId: currentUser.uid, exams })
-    });
-    const text = await res.text();
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ studentId: currentUser.uid, exams })
+});
 
-try {
-  const data = JSON.parse(text);
-  console.log("SUCCESS:", data);
-} catch (e) {
-  console.error("НЕ JSON:", text);
+// ПРАВИЛЬНАЯ ОБРАБОТКА ОТВЕТА:
+const data = await res.json(); // Сразу превращаем ответ сервера в готовый JSON-объект
+
+if (!data.success) {
+  // Если сервер вернул ошибку, перекидываем её вниз
+  throw new Error(data.error);
 }
-    if (!data.success) throw new Error(data.error);
-    currentPlanData = data.plan;
 
-    // Сохраняем в Firestore тоже
-    // Читаем существующий план
+console.log("План получен!", data.plan);
+currentPlanData = data.plan;
+
+// Сохраняем в Firestore тоже
 const existingSnap = await getDoc(doc(db, 'users', currentUser.uid, 'studyPlans', 'current'));
 let mergedPlans = data.plan.plans;
 
@@ -1235,14 +1240,15 @@ await setDoc(doc(db, 'users', currentUser.uid, 'studyPlans', 'current'), {
   active: true
 });
 
-    closePlanModal();
-    loadPlansPanel();
-    openPlanDetail(data.plan);
-  } catch(e) {
-    alert('Error generating plan: ' + e.message);
-    document.getElementById('plan-generating').style.display = 'none';
-    document.getElementById('btn-generate').style.display = 'block';
-  }
+closePlanModal();
+loadPlansPanel();
+openPlanDetail(data.plan);
+
+} catch(e) {
+  alert('Error generating plan: ' + e.message);
+  document.getElementById('plan-generating').style.display = 'none';
+  document.getElementById('btn-generate').style.display = 'block';
+}
 };
 
 async function loadPlansPanel() {

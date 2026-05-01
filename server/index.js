@@ -557,7 +557,7 @@ bot.onText(/\/start/, (msg) => {
     `/plan — AI creates a daily study plan\n` +
     `/pomodoro — 25-minute focus timer\n` +
     `/help — this message\n\n` +
-    `💻 Study at: http://localhost:3000`,
+    `💻 Study at: https://eduai-assistant-9fb47.web.app`, 
     { parse_mode: 'Markdown' }
   );
 });
@@ -974,5 +974,5 @@ app.post('/api/study-plan/complete', async (req, res) => {
 // ── START SERVER ──
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`✅ EduAI Backend started at http://localhost:${PORT}`);
+  console.log(`✅ EduAI Backend started on port ${PORT}`);
 });
