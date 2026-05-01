@@ -14,7 +14,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const admin = require('firebase-admin');
 if (!admin.apps.length) {
   admin.initializeApp({
-    credential: admin.credential.cert(require('../firebase-credentials.json')),
+    credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_CREDENTIALS)),
     projectId: 'eduai-assistant-9fb47'
   });
 }
@@ -24,7 +24,7 @@ const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const SHEET_NAME = 'Лист1';
 
 const auth = new google.auth.GoogleAuth({
-  keyFile: 'google-credentials.json',
+  credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
